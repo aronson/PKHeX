@@ -99,21 +99,24 @@ let private parseEVs (text:string) : Result<EV list> =
     |> function
     | [] -> Failure "Invalid EV entry"
     | evList -> Success evList
+let natureList = PKHeX.Core.Util.GetNaturesList("en").ToList()
 let private parseNature =
     function
     | Regex @"(.*) Nature" [maybeNature] -> 
-        let list = PKHeX.Core.Util.GetNaturesList("en").ToList()
-        match list.IndexOf(maybeNature) with
+        match natureList.IndexOf(maybeNature) with
         | -1 -> Failure "No nature found"
         | natureId -> Success natureId
     | _ -> Failure "Nature entry text invalid regex match"
+let moveList = PKHeX.Core.Util.GetMovesList("en").ToList()
 let private matchMove (text:string) =
-    let prefix = @"- "
-    let list = PKHeX.Core.Util.GetMovesList("en").ToList()
-    let moveString = new string(text.ToCharArray().[2..text.Length-1])
-    match list.IndexOf(moveString) with
-    | -1 -> Failure "invalid move text"
-    | moveId -> Success moveId
+    match text with
+    | Regex @"^- (.*)$" [maybeMove] ->
+        // Fix up any quotes to PKHeX quote character
+        let moveString = maybeMove.Replace("'","’")
+        match moveList.IndexOf(moveString) with
+        | -1 -> Failure "invalid move text"
+        | moveId -> Success moveId
+    | _ -> Failure "error parsing move text" 
 let private matchMoves =
     function
     | Success moveId -> Some moveId
@@ -125,7 +128,7 @@ let private buildMoveset (textLines:string list) =
       EffortValueResult = textLines.[2] |> parseEVs
       NatureResult = textLines.[3] |> parseNature
       MoveResults = 
-        match textLines.[4..7] |> List.choose (matchMove >> matchMoves) with
+        match textLines.[4..] |> List.choose (matchMove >> matchMoves) with
         | [] -> Failure "No moves!"
         | moves -> Success moves }
     // If all parsers were successful, the MoveSet is valid
