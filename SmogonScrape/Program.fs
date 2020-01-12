@@ -1,45 +1,54 @@
-﻿// Learn more about F# at https://fsharp.org
-// See the 'F# Tutorial' project for more help.
-open System.IO
+﻿open System.IO
+open System.Linq 
 open LocalDb
 open SmogonMoveset
+open MovesetParser
 [<EntryPoint>]
 let main _ =
+    // All raw smogon meta build strings
     let inputMons = 
         let readFileString (file:FileInfo) =
             use foo = file.OpenText()
-            foo.ReadToEnd()
+            (file.Name.Replace(".pk8", ""), foo.ReadToEnd())
         // Read all raw text files (assume format is correct for each file
         let dir = Config.ConfigFile.CurrentMeta.LocalMetaFilesDir.ToString()
         (new DirectoryInfo(dir)).
             EnumerateFiles()
         |> Seq.map readFileString |> Seq.toList
+    // Where to write modded pokemon files after they are built
     let destDirectory = 
         new DirectoryInfo(Config.ConfigFile.CurrentMeta.LocalMetaOutDir.ToString())
-    let writeMeta metaText =
-        match SmogonMoveset.buildMeta metaText with
+    // For quick lookup in a batch edit scenario
+    let localLookup = LocalDb.legalPokemon.ToLookup(fun (LegalPokemon mon) -> mon.Species)
+    // Create a legal .pk8 file given Smogon build input
+    let writeMeta (monName, metaText) =
+        // Parse build text into valid Meta record type
+        match MovesetParser.parseMeta metaText with
         | Success meta ->
-            let (LegalPokemon pokemon) =
-                LocalDb.legalPokemon
-                |> Seq.find ( fun mon ->
-                    let (LegalPokemon poke) = mon
-                    poke.Species = meta.Species && poke.EVTotal >= 508 )
-            SmogonMoveset.assignMeta meta pokemon
+            // Find first pokemon matching desired species from local legit collection
+            let (LegalPokemon pokemon) = localLookup.[meta.Species].Last()
+            // Apply Smogon meta build to previously-legal pokemon copy
+            SmogonMoveset.assignMoveset meta pokemon
+            // Reroll PokemonId, EncryptionConstant, and apply personal Trainer Info
             DataScrubber.adoptAndScrub pokemon
+            // Check if pokemon is still legal in PKHeX
             let analysis = new PKHeX.Core.LegalityAnalysis(pokemon)
             let invalidResults = 
                 analysis.Results |> Seq.where(fun r -> not r.Valid ) |> Seq.toList
-            if invalidResults.Length > 1 then
+            // Not legal!! 
+            if invalidResults.Length <> 0 then
                 failwith "Not legal"
-            let destDir = destDirectory.FullName.ToString()
-            let speciesName = PKHeX.Core.SpeciesName.GetSpeciesName(meta.Species, 2)
+            // Create destination .pk8 file and name 
             let destFile = 
                 new FileInfo(
-                    Path.Combine(destDir,
-                        sprintf "%s - %d.pk8" speciesName pokemon.PID))
+                    Path.Combine(destDirectory.FullName,
+                        sprintf "%s - %d.pk8" monName pokemon.PID))
+            // Write updated Pokemon file to import to PKHeX
             use writer = new BinaryWriter(File.Create(destFile.FullName))
             writer.Write(pokemon.DecryptedPartyData)
             writer.Flush()
-        | _ -> failwith "uh oh"
+        // If we got here, the meta format is likely broken
+        | _ -> failwith "uhhh ohh st-"
+    // Iterate over all Smogon moveset files in input dir and write to out dir
     List.iter writeMeta inputMons
     0
