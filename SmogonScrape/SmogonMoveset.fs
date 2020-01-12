@@ -27,6 +27,15 @@ let rawEVs (pokemon:Pokemon) =
     EV(SPA, pokemon.EV_SPA);
     EV(SPD, pokemon.EV_SPD);
     EV(SPE, pokemon.EV_SPE); ]
+let assignEV (effortValue:EV) (pokemon: Pokemon) =
+    let (evType, value) = effortValue
+    match evType with
+    | HP -> pokemon.EV_HP <- value
+    | ATK -> pokemon.EV_ATK <- value
+    | DEF -> pokemon.EV_DEF <- value
+    | SPA -> pokemon.EV_SPA <- value
+    | SPD -> pokemon.EV_SPD <- value
+    | SPE -> pokemon.EV_SPE <- value
 // Create Meta record from a given pokemon
 let getMeta (pokemon: Pokemon) =
   { Species = pokemon.Species
@@ -41,6 +50,30 @@ let getMeta (pokemon: Pokemon) =
 // Wrap it in the SmogonMoveset type for monadic functions
 let getMoveset (pokemon: Pokemon) : SmogonMoveset = 
     SmogonMoveset(pokemon, getMeta pokemon)
+let assignMeta (meta: Meta) (pokemon: Pokemon) =
+    // Edit raw data with helper functions from PKHeX library
+    PKHeX.Core.CommonEdits.SetAbility(pokemon, meta.Ability)
+    PKHeX.Core.CommonEdits.SetNature(pokemon, meta.Nature)
+    PKHeX.Core.CommonEdits.ApplyHeldItem(pokemon, meta.HeldItem, 8)
+    // Set all possible technical records as learned
+    PKHeX.Core.CommonEdits.SetRecordFlags(pokemon)
+    // Set all moves with max PP ups
+    PKHeX.Core.CommonEdits.SetMoves(pokemon, [|meta.Move1; meta.Move2; meta.Move3; meta.Move4|], true)
+    // Vanity data
+    pokemon.Nature <- meta.Nature
+    pokemon.CurrentFriendship <- 255
+    // Set perfect IVs
+    let perfectIV = 31
+    for ivIndex in [0..5] do
+        PKHeX.Core.CommonEdits.SetIV(pokemon, ivIndex, perfectIV)
+    // Do it again just in case?
+    let perfectIVs = [|31us; 31us; 31us; 31us; 31us; 31us|]
+    pokemon.SetStats(perfectIVs)
+    // Clear EVs
+    for evIndex in [0..5] do
+        PKHeX.Core.CommonEdits.SetEV(pokemon, evIndex, 0)
+    // Assign meta EVs
+    meta.EVs |> Seq.iter (fun ev -> assignEV ev pokemon)
 
 (* ==== Smogon Website Text Parser begins ==== *)
 
@@ -50,7 +83,7 @@ type Result<'a> =
     | Failure of string 
 // Example export moveset data from smogon
 [<Literal>]
-let clefableMeta = """Clefable @ Life Orb
+let clefableLifeOrb = """Clefable @ Life Orb
 Ability: Magic Guard
 EVs: 196 HP / 252 SpA / 60 Spe
 Modest Nature
@@ -58,6 +91,15 @@ Modest Nature
 - Flamethrower
 - Thunderbolt
 - Moonlight"""
+[<Literal>]
+let clefableUtility = """Clefable @ Leftovers
+Ability: Magic Guard
+EVs: 252 HP / 160 Def / 96 SpD
+Calm Nature
+- Thunder Wave
+- Moonblast
+- Wish
+- Protect"""
 // Express lines of text in such an entry
 type SmogonEntry = 
   { HeaderResult: Result<int * int>
@@ -72,12 +114,11 @@ let (|Regex|_|) pattern input =
     let m = Regex.Match(input, pattern)
     if m.Success then Some(List.tail [ for g in m.Groups -> g.Value ])
     else None
-
-    
 // Parse title line into (Species, Item)
-let matchHeaderRow textIn : Result<(int * int)> = 
-    match textIn with 
-    | Regex @"\s?(\w+)\s?@\s?(.*)" [maybeSpecies; maybeHeldItem] ->
+let items = PKHeX.Core.Util.GetItemsList("en").ToList()
+let matchHeaderRow =
+    function
+    | Regex @"\s?(\w+)\s?@\s?(.*)\s?" [maybeSpecies; maybeHeldItem] ->
         match PKHeX.Core.SpeciesName.GetSpeciesID(maybeSpecies) with
         | -1 -> None // "No species for this string"
         // Valid species data
@@ -86,29 +127,22 @@ let matchHeaderRow textIn : Result<(int * int)> =
         function
         | None -> Failure "Bad species"
         | Some speciesId ->
-            let items = PKHeX.Core.Util.GetItemsList("en").ToList()
             match items.IndexOf(maybeHeldItem) with
             | -1 -> Failure "Bad item"
             | itemId -> Success (speciesId, itemId)
     | _ -> Failure "Failed header string regex match"
-// Update header entry Meta
-//let parseHeaderEntry textIn (currentMeta:Meta) : Result<Meta> =
-//    match matchHeaderRow textIn with
-//    | Some (speciesId, itemId) -> 
-//        Success { currentMeta with Species = speciesId; HeldItem = itemId }
-//    | None -> Failure "Invalid header entry"
-let matchAbility text =
-    match text with
+let abilities = PKHeX.Core.Util.GetAbilitiesList("en").ToList()
+let matchAbility =
+    function
     | Regex @"Ability: (.*)" [maybeAbility] ->
-        let natures = PKHeX.Core.Util.GetAbilitiesList("en").ToList()
-        match natures.IndexOf(maybeAbility) with
+        match abilities.IndexOf(maybeAbility) with
         | -1 -> Failure "Bad nature"
         | abilityId -> Success abilityId
     | _ -> Failure "InvalidHeaderEntry"
 // Parse EV line into (number, EV string name)
 let matchEvText =
     function
-    | Regex @".?(\d+) (.+)" [maybeEffortValue; maybeStatName] -> 
+    | Regex @"\s?(\d+) (\w+)\s?" [maybeEffortValue; maybeStatName] -> 
         let maxEffortValue = 252
         let minEffortValue = 0
         // Is the first match really the stat integer?
@@ -127,9 +161,9 @@ let matchEvText =
             | Some ev -> EV(ev, effortValue) |> Success
             | None -> Failure "Invalid stat type string"
         // Wasn't an int!!
-        | _ -> Failure "Invalid effort value"
+        | record -> Failure "Invalid effort value"
     // uh oh
-    | _ -> Failure "EV entry text yielded invalid regex match"
+    | record -> Failure "EV entry text yielded invalid regex match"
 // Update moveset metadata with EV row
 let parseEVs (text:string) : Result<EV list> =
     // Basic validation
@@ -146,9 +180,8 @@ let parseEVs (text:string) : Result<EV list> =
         | Success result -> Some result
         | _ -> None )
     |> Seq.toList
-    |>
-    function
-    | [] -> Failure "Ivalid EV entry"
+    |> function
+    | [] -> Failure "Invalid EV entry"
     | evList -> Success evList
 let parseNature =
     function
@@ -170,16 +203,15 @@ let matchMoves =
     | Success moveId -> Some moveId
     | _ -> None
 let buildEntry (textLines:string list) =
-    let result =
-      { HeaderResult = (textLines.[0] |> matchHeaderRow)
-        AbilityResult = textLines.[1] |> matchAbility
-        EffortValueResult = textLines.[2] |> parseEVs
-        NatureResult = textLines.[3] |> parseNature
-        MoveResults = 
-          match textLines.[4..7] |> List.choose (matchMove >> matchMoves) with
-          | [] -> Failure "No moves!"
-          | moves -> Success moves }
-    match result with
+    { HeaderResult = (textLines.[0] |> matchHeaderRow)
+      AbilityResult = textLines.[1] |> matchAbility
+      EffortValueResult = textLines.[2] |> parseEVs
+      NatureResult = textLines.[3] |> parseNature
+      MoveResults = 
+        match textLines.[4..7] |> List.choose (matchMove >> matchMoves) with
+        | [] -> Failure "No moves!"
+        | moves -> Success moves }
+    |> function
     | { SmogonEntry.HeaderResult = (Success (species, heldItem))
         SmogonEntry.AbilityResult = (Success ability)
         SmogonEntry.EffortValueResult = (Success evList)

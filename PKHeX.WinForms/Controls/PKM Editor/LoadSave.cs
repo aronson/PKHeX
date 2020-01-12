@@ -321,7 +321,7 @@ namespace PKHeX.WinForms.Controls
             Label_CTGender.ForeColor = Draw.GetGenderColor(gender);
 
             // Indicate who is currently in possession of the PKM
-            UpadteHandlingTrainerBackground(pk);
+            UpadteHandlingTrainerBackground(pk); // TODO: Typo in function
         }
 
         private void UpadteHandlingTrainerBackground(PKM pk)
