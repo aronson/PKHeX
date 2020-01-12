@@ -1,11 +1,10 @@
 ﻿module LocalDb
 open System.IO
+open Config
 type PKM = PKHeX.Core.PK8
 // Desktop PKHeX pkdb folder
-[<Literal>]
-let localPath = "C:\Users\i\Desktop\PKHex\pkmdb"
 
-let localDirectory = new DirectoryInfo(localPath)
+let localDirectory = new DirectoryInfo(ConfigFile.Main.DatabaseDirectory.ToString())
 
 // FileInfos for each .pkm8 file
 let localFileInfos = localDirectory.EnumerateFiles()

@@ -1,5 +1,6 @@
 ﻿module DataScrubber
 open System.IO
+open Config
 type Pokemon = PKHeX.Core.PK8
 // Get a clean PID, probably shiny
 let rec private rerollPID (pokemon:Pokemon) (wantShiny:bool) =
@@ -11,7 +12,7 @@ let rec private rerollPID (pokemon:Pokemon) (wantShiny:bool) =
     else 
         rerollPID pokemon wantShiny
 // Get SAV 
-let private savFile = new FileInfo(@"C:\Users\i\Desktop\PKHex\bak\main [Luigi (SW) - 011910241238].bak")
+let private savFile = new FileInfo(ConfigFile.Main.LocalTrainerSave.ToString())
 let private sav = new PKHeX.Core.SAV8SWSH(File.ReadAllBytes(savFile.FullName))
 // Assign trainerID
 let private assignLuigi (mon:Pokemon) =
