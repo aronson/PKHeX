@@ -24,9 +24,10 @@ let main _ =
     let writeMeta (monName, metaText) =
         // Parse build text into valid Meta record type
         match MovesetParser.parseMeta metaText with
-        | Success meta ->
+        | Ok meta ->
             // Find first pokemon matching desired species from local legit collection
-            let (LegalPokemon pokemon) = localLookup.[meta.Species].Last()
+            let (Species spId) = meta.Species
+            let (LegalPokemon pokemon) = localLookup.[spId].Last()
             // Apply Smogon meta build to previously-legal pokemon copy
             SmogonMoveset.assignMoveset meta pokemon
             // Reroll PokemonId, EncryptionConstant, and apply personal Trainer Info

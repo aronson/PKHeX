@@ -1,11 +1,10 @@
 ﻿module MovesetParser
-open System.Linq
 open System.Text.RegularExpressions
 open SmogonMoveset
-// Text parser result
-type Result<'a> =
-    | Success of 'a
-    | Failure of string 
+open Stack
+open ResultLogic
+open DataCache
+
 // Example export moveset data from smogon
 [<Literal>]
 let private exampleInput = """Clefable @ Life Orb
@@ -16,46 +15,37 @@ Modest Nature
 - Flamethrower
 - Thunderbolt
 - Moonlight"""
-// Express lines of text in such an entry
-type private SmogonEntry = 
-  { HeaderResult: Result<int * int>
-    AbilityResult: Result<int>
-    EffortValueResult: Result<EV list>
-    NatureResult: Result<int>
-    MoveResults: Result<int list> }
+
 // Regex active pattern to extract data as string array
 let private (|Regex|_|) pattern input =
     let m = Regex.Match(input, pattern)
     if m.Success then Some(List.tail [ for g in m.Groups -> g.Value ])
     else None
-// Cache all items
-let private items = PKHeX.Core.Util.GetItemsList("en").ToList()
 // Parse title line into (Species, Item)
-let private matchHeaderRow =
+type HeaderData = HeaderData of Species * HeldItem
+let private parseHeader =
     function
-    | Regex @"\s?(\w+)\s?@\s?(.*)\s?" [maybeSpecies; maybeHeldItem] ->
+    | RawHeader(Regex @"\s?(\w+)\s?@\s?(.*)\s?" [maybeSpecies; maybeHeldItem]) ->
         match PKHeX.Core.SpeciesName.GetSpeciesID(maybeSpecies) with
         | -1 -> None // "No species for this string"
         // Valid species data
         | id -> Some id
         |>
         function
-        | None -> Failure "Bad species"
+        | None -> Error "Bad species"
         | Some speciesId ->
-            match items.IndexOf(maybeHeldItem) with
-            | -1 -> Failure "Bad item"
-            | itemId -> Success (speciesId, itemId)
-    | _ -> Failure "Failed header string regex match"
-// Cache all abilities
-let private abilities = PKHeX.Core.Util.GetAbilitiesList("en").ToList()
+            match itemIds.TryGetValue(maybeHeldItem) with
+            | false, _ -> Error "Bad item"
+            | true, itemId -> Ok (HeaderData(Species speciesId, HeldItem itemId))
+    | _ -> Error "Failed header string regex match"
 // Lookup ability string to raw id
 let private matchAbility =
     function
-    | Regex @"Ability: (.*)" [maybeAbility] ->
-        match abilities.IndexOf(maybeAbility) with
-        | -1 -> Failure "Bad nature"
-        | abilityId -> Success abilityId
-    | _ -> Failure "InvalidHeaderEntry"
+    | RawAbility(Regex @"Ability: (.*)" [maybeAbility]) ->
+        match abilityIds.TryGetValue(maybeAbility) with
+        | false, _ -> Error "Bad nature"
+        | true, abilityId -> Ok (Ability abilityId)
+    | _ -> Error "InvalidHeaderEntry"
 // Parse one EV line into (number, EV string name)
 let private matchEvText =
     function
@@ -75,83 +65,86 @@ let private matchEvText =
             |> 
             // It should be a valid effort value string
             function
-            | Some ev -> EV(ev, effortValue) |> Success
-            | None -> Failure "Invalid stat type string"
+            | Some ev -> EV(ev, effortValue) |> Ok
+            | None -> Error "Invalid stat type string"
         // Wasn't an int!!
-        | _ -> Failure "Invalid effort value"
+        | _ -> Error "Invalid effort value"
     // uh oh
-    | _ -> Failure "EV entry text yielded invalid regex match"
+    | _ -> Error "EV entry text yielded invalid regex match"
 // Update moveset metadata with EV row
-let private parseEVs (text:string) : Result<EV list> =
+// with linefeed string
+let private parseEVs (RawEVs text) : Result<EVs, string> =
     let prefix = @"EVs: "
     let strippedPrefixString = 
         new string(text.ToCharArray().[prefix.Length - 1 .. text.Length - 1])
     // Split array into (number, EV name) strings
     let evStrings = strippedPrefixString.Split([|'/'|])
     // Run them through the parser
-    evStrings |> Seq.map matchEvText
-    // Only keep good results
-    |> Seq.choose( 
-        function
-        | Success result -> Some result
-        | _ -> None )
-    |> Seq.toList
-    |> function
-    | [] -> Failure "Invalid EV entry"
-    | evList -> Success evList
-let natureList = PKHeX.Core.Util.GetNaturesList("en").ToList()
+    let results = Seq.map matchEvText evStrings
+    match fold results with
+    | Error f -> Error f
+    | Ok ev -> Ok (EVs(Seq.toList ev))
 let private parseNature =
     function
-    | Regex @"(.*) Nature" [maybeNature] -> 
-        match natureList.IndexOf(maybeNature) with
-        | -1 -> Failure "No nature found"
-        | natureId -> Success natureId
-    | _ -> Failure "Nature entry text invalid regex match"
-let moveList = PKHeX.Core.Util.GetMovesList("en").ToList()
-let private matchMove (text:string) =
-    match text with
+    | RawNature(Regex @"(.*) Nature" [maybeNature]) -> 
+        match natureIds.TryGetValue(maybeNature) with
+        | false, _ -> Error "No nature found"
+        | true, natureId -> Ok (Nature natureId)
+    | _ -> Error "Nature entry text invalid regex match"
+let private matchMove (RawMoves moveStrings) =
+    Seq.map
+    <| function
     | Regex @"^- (.*)$" [maybeMove] ->
         // Fix up any quotes to PKHeX quote character
         let moveString = maybeMove.Replace("'","’")
-        match moveList.IndexOf(moveString) with
-        | -1 -> Failure "invalid move text"
-        | moveId -> Success moveId
-    | _ -> Failure "error parsing move text" 
-let private matchMoves =
-    function
-    | Success moveId -> Some moveId
-    | _ -> None
+        match moveIds.TryGetValue(moveString) with
+        | false, _ -> Error "invalid move text"
+        | true, moveId -> Ok moveId
+    | _ -> Error "error parsing move text" 
+    <| moveStrings
+    |> fold |> Result.map List.ofSeq |> Result.map Moves
+let private parseHeaderS = state {
+        let! text = pop()
+        return (parseHeader (RawHeader text)) }
+let private parseAbilityS = state {
+        let! text = pop()
+        return matchAbility (RawAbility text) }
+let private parseEVsS = state {
+        let! text = pop()
+        return parseEVs (RawEVs text) }
+let private parseNatureS = state {
+        let! text = pop()
+        return parseNature (RawNature text) }
+let parseMoveS = state {
+    let! move1 = pop()
+    let! move2 = pop()
+    let! move3 = pop()
+    let! move4 = pop()
+    let moves = [move1; move2; move3; move4]
+    return matchMove (RawMoves moves) }
+let private createMoveset (HeaderData(species, heldItem)) ability effort nature moves =
+    { Species = species; HeldItem = heldItem; Ability = ability;
+      EVs = effort; Nature = nature; Moves = moves }
+let internal result = new ResultBuilder()
+let private parseMoveset = state {
+    let! header = parseHeaderS
+    let! abilityResult = parseAbilityS
+    let! effortResult = parseEVsS
+    let! natureResult = parseNatureS
+    let! moveResult = parseMoveS
+    return result {
+        let! res1 = header
+        let! res2 = abilityResult
+        let! res3 = effortResult
+        let! res4 = natureResult
+        let! res5 = moveResult
+        return createMoveset res1 res2 res3 res4 res5 } }
 let private buildMoveset (textLines:string list) =
-    // Run various parsers
-    { HeaderResult = (textLines.[0] |> matchHeaderRow)
-      AbilityResult = textLines.[1] |> matchAbility
-      EffortValueResult = textLines.[2] |> parseEVs
-      NatureResult = textLines.[3] |> parseNature
-      MoveResults = 
-        match textLines.[4..] |> List.choose (matchMove >> matchMoves) with
-        | [] -> Failure "No moves!"
-        | moves -> Success moves }
-    // If all parsers were successful, the MoveSet is valid
-    |> function
-    | { SmogonEntry.HeaderResult = (Success (species, heldItem))
-        SmogonEntry.AbilityResult = (Success ability)
-        SmogonEntry.EffortValueResult = (Success evList)
-        SmogonEntry.NatureResult = (Success nature)
-        SmogonEntry.MoveResults = (Success moves) }
-        // Stitch together valid Moveset
-        ->{ Species = species; HeldItem = heldItem; Ability = ability;
-            EVs = evList; Nature = nature;
-            Move1 = moves.[0]; Move2 = moves.[1]
-            Move3 = moves.[2]; Move4 = moves.[3] }
-          |> Success 
-    | _ -> Failure "Invalid entry"
+    let (result, _) = runS parseMoveset (Stack textLines)
+    result
 // Take the contents of a Smogon moveset text and build a Moveset
 let parseMeta (metaText:string) =
     // Fix CRLF in Windows files
-    let strippedText = metaText.Replace("\r\n", "\n")
+    let movesetLines = metaText.Replace("\r\n", "\n").Split([|'\n'|]) |> Seq.toList
     // Split into newlines
-    strippedText.Split([|'\n'|])
-    // Strip empty lines
-    |> Seq.choose(fun line -> if line.Length <> 0 then Some line else None)
-    |> Seq.toList
-    |> buildMoveset
+    buildMoveset movesetLines
