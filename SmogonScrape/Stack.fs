@@ -1,5 +1,7 @@
-﻿module Stack
+﻿// Intent: Handle smogon moveset string parsing as a process of single operations with state
+module Stack
 
+// The State monad and its computation expression builder
 type S<'State,'Value> =
     S of ('State -> 'Value * 'State)
 let runS (S f) state = f state
@@ -11,11 +13,24 @@ let bindS f xS =
         let x, newState = runS xS state
         runS (f x) newState
     S run
+let run state x = let (S(f)) = x in f state
 type StateBuilder()=
     member _.Return(x) = returnS x
     member _.ReturnFrom(xS) = xS
     member _.Bind(xS,f) = bindS f xS
+    member _.Combine (x1: S<'s, 'a>, x2: S<'s, 'b>) =
+        S(fun state ->
+            let result, state = run state x1
+            run state x2)
+    member _.Delay f : S<'s, 'a> = f ()
+
+
+// Intent: the stack needs a state to function line to line
+// Define state {} computation expression builder at runtime
 let state = new StateBuilder()
+
+
+// The stack monad and its computation expression builder
 type Stack<'a> = Stack of 'a list
 // define pop outside of state expressions
 let popStack (Stack contents) = 
@@ -52,3 +67,9 @@ let push newTop = state {
     let newStack = pushStack newTop stack
     do! putS newStack 
     return () }
+let mapS f bodyPartM = 
+    let transformWhileAlive vitalForce = 
+        let bodyPart,remainingVitalForce = runS bodyPartM vitalForce 
+        let updatedBodyPart = f bodyPart
+        updatedBodyPart, remainingVitalForce
+    S transformWhileAlive 

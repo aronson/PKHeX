@@ -21,11 +21,12 @@ let private (|Regex|_|) pattern input =
     let m = Regex.Match(input, pattern)
     if m.Success then Some(List.tail [ for g in m.Groups -> g.Value ])
     else None
+
 // Parse title line into (Species, Item)
 type HeaderData = HeaderData of Species * HeldItem
 let private parseHeader =
     function
-    | RawHeader(Regex @"\s?(\w+)\s?@\s?(.*)\s?" [maybeSpecies; maybeHeldItem]) ->
+    | RawHeader(Regex @"^(.*)\s@\s(.*)" [maybeSpecies; maybeHeldItem]) ->
         match PKHeX.Core.SpeciesName.GetSpeciesID(maybeSpecies) with
         | -1 -> None // "No species for this string"
         // Valid species data
@@ -38,6 +39,7 @@ let private parseHeader =
             | false, _ -> Error "Bad item"
             | true, itemId -> Ok (HeaderData(Species speciesId, HeldItem itemId))
     | _ -> Error "Failed header string regex match"
+
 // Lookup ability string to raw id
 let private matchAbility =
     function
@@ -45,7 +47,8 @@ let private matchAbility =
         match abilityIds.TryGetValue(maybeAbility) with
         | false, _ -> Error "Bad nature"
         | true, abilityId -> Ok (Ability abilityId)
-    | _ -> Error "InvalidHeaderEntry"
+    | _ -> Error "Invalid Header Entry"
+
 // Parse one EV line into (number, EV string name)
 let private matchEvText =
     function
@@ -63,16 +66,16 @@ let private matchEvText =
             | "SPA" -> Some SPA | "SPD" -> Some SPD | "SPE" -> Some SPE
             | _ -> None
             |> 
-            // It should be a valid effort value string
+            // If we got a stat at runtime wrap it into the EVType and call it a day
             function
             | Some ev -> EV(ev, effortValue) |> Ok
             | None -> Error "Invalid stat type string"
-        // Wasn't an int!!
+        // Wasn't an int!?
         | _ -> Error "Invalid effort value"
     // uh oh
     | _ -> Error "EV entry text yielded invalid regex match"
-// Update moveset metadata with EV row
-// with linefeed string
+
+// Update moveset metadata with EV row with linefeed string
 let private parseEVs (RawEVs text) : Result<EVs, string> =
     let prefix = @"EVs: "
     let strippedPrefixString = 
@@ -84,6 +87,7 @@ let private parseEVs (RawEVs text) : Result<EVs, string> =
     match fold results with
     | Error f -> Error f
     | Ok ev -> Ok (EVs(Seq.toList ev))
+
 let private parseNature =
     function
     | RawNature(Regex @"(.*) Nature" [maybeNature]) -> 
@@ -91,18 +95,22 @@ let private parseNature =
         | false, _ -> Error "No nature found"
         | true, natureId -> Ok (Nature natureId)
     | _ -> Error "Nature entry text invalid regex match"
+
 let private matchMove (RawMoves moveStrings) =
     Seq.map
     <| function
-    | Regex @"^- (.*)$" [maybeMove] ->
-        // Fix up any quotes to PKHeX quote character
-        let moveString = maybeMove.Replace("'","’")
-        match moveIds.TryGetValue(moveString) with
-        | false, _ -> Error "invalid move text"
-        | true, moveId -> Ok moveId
-    | _ -> Error "error parsing move text" 
+        | Regex @"^- (.*)$" [maybeMove] ->
+            // Fix up any quotes to PKHeX quote character
+            let moveString = maybeMove.Replace("'","’")
+            match moveIds.TryGetValue(moveString) with
+            | false, _ -> Error "invalid move text"
+            | true, moveId -> Ok moveId
+        | _ -> Error "error parsing move text" 
     <| moveStrings
-    |> fold |> Result.map List.ofSeq |> Result.map Moves
+    // Result is an excellent monad
+    |> fold |> Result.map (List.ofSeq >> Moves)
+
+// HACK: I don't understand computation expressions and this point I'm glad it works
 let private parseHeaderS = state {
         let! text = pop()
         return (parseHeader (RawHeader text)) }
@@ -115,7 +123,7 @@ let private parseEVsS = state {
 let private parseNatureS = state {
         let! text = pop()
         return parseNature (RawNature text) }
-let parseMoveS = state {
+let private parseMoveS = state {
     let! move1 = pop()
     let! move2 = pop()
     let! move3 = pop()

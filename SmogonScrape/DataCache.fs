@@ -1,6 +1,9 @@
-﻿module internal DataCache
+﻿// Intent: create a fast lookup of common pokemon strings to domain model at runtime
+module internal DataCache
 open System.Linq
 open System.Collections.Generic
+
+// TODO: is a for loop really the best way to make these key-value collection?
 
 let itemIds =
     let items = PKHeX.Core.Util.GetItemsList("en").ToList()
@@ -11,6 +14,7 @@ let itemIds =
             item.Add(i, index)
         index <- index + 1
     item
+
 let abilityIds = 
     let abilities = 
         PKHeX.Core.Util.GetAbilitiesList("en").ToList()
@@ -21,6 +25,7 @@ let abilityIds =
             abil.Add(a, index)
         index <- index + 1
     abil
+
 let natureIds = 
     let natures = PKHeX.Core.Util.GetNaturesList("en").ToList()
     let abil = new Dictionary<string, int>()
@@ -30,6 +35,7 @@ let natureIds =
             abil.Add(a, index)
         index <- index + 1
     abil
+
 let moveIds = 
     let moves = PKHeX.Core.Util.GetMovesList("en").ToList()
     let abil = new Dictionary<string, int>()
